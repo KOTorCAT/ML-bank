@@ -17,71 +17,70 @@ class ModelService:
         self.pipeline: Optional[Pipeline] = None
         self.is_loaded: bool = False
         self.model_metadata: Dict[str, Any] = {}
+        self.label_encoders: Dict[str, Any] = {}
+        self.categorical_cols: List[str] = []
+        self.feature_cols: List[str] = []
 
     def load_model(self, model_data: bytes) -> None:
-        """
-        Загружает модель из байтов
-        
-        Args:
-            model_data: Сериализованная модель в формате bytes
-        
-        Raises:
-            ValueError: Если модель невалидна
-        """
         try:
-            # Загружаем из байтов
             loaded_object = joblib.load(BytesIO(model_data))
 
-            # Проверяем, что загружен pipeline
             if isinstance(loaded_object, dict) and "pipeline" in loaded_object:
                 self.pipeline = loaded_object["pipeline"]
                 self.model_metadata = loaded_object.get("metadata", {})
+                self.label_encoders = loaded_object.get("label_encoders", {})
+                self.categorical_cols = loaded_object.get("categorical_cols", [])
+                self.feature_cols = loaded_object.get("feature_cols", [])
             elif isinstance(loaded_object, Pipeline):
                 self.pipeline = loaded_object
                 self.model_metadata = {}
             else:
-                raise ValueError(
-                    "Invalid model format. Expected sklearn Pipeline or dict with 'pipeline' key"
-                )
+                raise ValueError("Invalid model format")
 
             self.is_loaded = True
-            logger.info("Model successfully loaded")
+            logger.info("Model loaded successfully")
 
         except Exception as e:
             logger.error(f"Error loading model: {str(e)}")
             self.is_loaded = False
-            self.pipeline = None
             raise ValueError(f"Failed to load model: {str(e)}")
 
-    def predict(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Делает предсказание для списка записей
+    def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Предобработка сырых данных"""
+        df = df.copy()
+        for col in self.categorical_cols:
+            if col in df.columns and col in self.label_encoders:
+                le = self.label_encoders[col]
+                df[col] = df[col].apply(
+                    lambda x: x if x in le.classes_ else le.classes_[0]
+                )
+                df[col] = le.transform(df[col])
         
-        Args:
-            records: Список словарей с признаками
-            
-        Returns:
-            Список словарей с добавленным полем loan_status
-        """
+        # Оставляем только нужные признаки в правильном порядке
+        if self.feature_cols:
+            return df[self.feature_cols]
+        return df
+
+    def predict(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not self.is_loaded or self.pipeline is None:
             raise ValueError("Model not loaded. Please upload model first.")
 
         try:
-            # Конвертируем в DataFrame
             df = pd.DataFrame(records)
 
-            # Делаем предсказание
-            predictions = self.pipeline.predict(df)
-            probabilities = None
+            # Если есть энкодеры, значит данные сырые — предобрабатываем
+            if self.label_encoders:
+                df = self._preprocess(df)
+            elif self.feature_cols:
+                df = df[self.feature_cols]
 
-            # Пробуем получить вероятности
+            predictions = self.pipeline.predict(df)
+            
             try:
-                probabilities = self.pipeline.predict_proba(df)
-                prob_values = probabilities[:, 1].tolist()
+                prob_values = self.pipeline.predict_proba(df)[:, 1].tolist()
             except Exception:
                 prob_values = [None] * len(predictions)
 
-            # Формируем результат
             results = []
             for i, record in enumerate(records):
                 result_record = record.copy()
@@ -103,57 +102,41 @@ class ModelService:
     def predict_from_csv(
         self, csv_data: bytes
     ) -> Tuple[pd.DataFrame, Optional[float], int]:
-        """
-        Делает предсказание из CSV файла
-        
-        Args:
-            csv_data: CSV файл в байтах
-            
-        Returns:
-            DataFrame с предсказаниями, ROC-AUC (если был target), количество строк
-        """
         if not self.is_loaded or self.pipeline is None:
             raise ValueError("Model not loaded. Please upload model first.")
 
         try:
-            # Читаем CSV
             df = pd.read_csv(BytesIO(csv_data))
             original_df = df.copy()
             rows_count = len(df)
 
-            # Проверяем наличие target
             has_target = "loan_status" in df.columns
-
-            # Отделяем target если есть
             if has_target:
                 y_true = df["loan_status"].copy()
-                df_processed = df.drop(columns=["loan_status"])
+                df = df.drop(columns=["loan_status"])
             else:
                 y_true = None
-                df_processed = df
 
-            # Предсказание
+            # Предобработка
+            df_processed = self._preprocess(df)
+
             predictions = self.pipeline.predict(df_processed)
             
-            # Пробуем получить вероятности
             try:
                 probabilities = self.pipeline.predict_proba(df_processed)[:, 1]
             except Exception:
                 probabilities = None
 
-            # Добавляем предсказания
             original_df["predicted_loan_status"] = predictions
             if probabilities is not None:
                 original_df["probability"] = probabilities.round(4)
 
-            # Вычисляем ROC-AUC если есть target
             roc_auc = None
             if has_target and y_true is not None:
                 try:
                     roc_auc = float(roc_auc_score(y_true, predictions))
-                    logger.info(f"ROC-AUC: {roc_auc:.4f}")
                 except Exception as e:
-                    logger.warning(f"Could not calculate ROC-AUC: {str(e)}")
+                    logger.warning(f"ROC-AUC error: {str(e)}")
 
             logger.info(f"CSV predictions made for {rows_count} records")
             return original_df, roc_auc, rows_count
@@ -163,5 +146,4 @@ class ModelService:
             raise ValueError(f"CSV prediction failed: {str(e)}")
 
 
-# Синглтон сервиса
 model_service = ModelService()
