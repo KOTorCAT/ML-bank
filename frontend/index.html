@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Проверка ипотеки</title>
+</head>
+<body>
+    <h1>Проверка одобрения ипотеки</h1>
+
+    <!-- ФРОНТЕНДЕР: здесь твоя форма -->
+    <p>Здесь будет форма ввода данных клиента.</p>
+
+    <!-- ФРОНТЕНДЕР: здесь вывод результата -->
+    <p>Здесь будет результат: одобрено/отказ и вероятность.</p>
+
+    <!-- 
+        Как отправлять запрос к API:
+        
+        fetch('/model/predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ records: [{...}] })
+        })
+        
+        Документация: /docs
+        Проверка модели: /health
+    -->
+</body>
+</html>

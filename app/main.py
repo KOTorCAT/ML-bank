@@ -6,6 +6,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 # Подключаем роутер с эндпоинтами из соседнего файла
 from app.routers import model
@@ -25,6 +26,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Подключаем папку frontend для статических файлов (HTML, CSS, JS)
+# Фронтендер кладёт свои файлы в папку frontend/
+app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
+
 # Подключаем эндпоинты из router/model.py
 app.include_router(model.router)
 
@@ -39,7 +44,8 @@ async def root():
         "version": "1.0.0",
         "status": "работает",
         "endpoints": {
-            "документация": "/docs",
+            "документация_api": "/docs",
+            "интерфейс_пользователя": "/app",
             "тестовая_страница": "/test",
             "загрузить_модель": "/model/upload-model",
             "предсказание_json": "/model/predict",
@@ -204,4 +210,4 @@ async def test_page():
 # Запуск сервера
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
