@@ -35,13 +35,13 @@ pip install -r requirements.txt
 python -m app.main
 
 
-#Windows (CMD)
+#Windows (PowerShell)
 
 # 1. Создать виртуальное окружение
 python -m venv venv
 
 # 2. Активировать
-venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 
 # 3. Установить зависимости
 pip install -r requirements.txt
