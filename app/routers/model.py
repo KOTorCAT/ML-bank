@@ -4,22 +4,17 @@
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
+import logging
 
-# Импортируем только то, что реально используется
 from app.schemas.requests import PredictRequest
-
-# Сервис модели — объект, который хранит модель и делает предсказания
 from app.services.predictor import model_service
 
 router = APIRouter(prefix="/model", tags=["model"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/upload-model")
 async def upload_model(file: UploadFile = File(...)):
-    """
-    Загрузка модели из файла .pkl.
-    Модель хранится в памяти сервера до перезапуска.
-    """
     if not file.filename.endswith(".pkl"):
         raise HTTPException(400, detail="Файл должен иметь расширение .pkl")
 
@@ -35,15 +30,12 @@ async def upload_model(file: UploadFile = File(...)):
 
 @router.post("/predict")
 async def predict(request: PredictRequest):
-    """
-    Предсказание по JSON.
-    Принимает данные клиента, возвращает одобрено/отказ и вероятность.
-    """
     if not model_service.is_loaded:
         raise HTTPException(400, detail="Модель не загружена. Сначала загрузите модель через /upload-model")
 
     try:
         records = [record.model_dump(exclude_none=True) for record in request.records]
+        logger.info(f"Получены данные: {records}")
         results = model_service.predict(records)
         return {"records": results, "status": "success"}
     except ValueError as e:
@@ -54,11 +46,6 @@ async def predict(request: PredictRequest):
 
 @router.post("/predict-from-csv")
 async def predict_from_csv(file: UploadFile = File(...)):
-    """
-    Предсказание из CSV-файла.
-    Возвращает CSV с добавленными колонками predicted_loan_status и probability.
-    Если в файле есть loan_status — считает ROC-AUC.
-    """
     if not model_service.is_loaded:
         raise HTTPException(400, detail="Модель не загружена. Сначала загрузите модель через /upload-model")
 
@@ -84,10 +71,6 @@ async def predict_from_csv(file: UploadFile = File(...)):
 
 @router.get("/stats")
 async def get_stats():
-    """
-    Статистика: сколько загружено моделей, сколько предсказаний,
-    сколько одобрено/отказов, последние 10 запросов.
-    """
     try:
         stats = model_service.get_stats()
         return {"status": "success", "data": stats}

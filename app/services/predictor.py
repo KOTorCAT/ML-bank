@@ -1,12 +1,3 @@
-"""
-Сервис модели — главный файл с логикой.
-Здесь происходит:
-- загрузка модели из файла
-- предобработка данных (кодирование категорий)
-- вызов model.predict()
-- сохранение истории в базу данных
-"""
-
 import joblib
 import pandas as pd
 import numpy as np
@@ -20,40 +11,26 @@ from sklearn.metrics import roc_auc_score
 
 logger = logging.getLogger(__name__)
 
-# Путь к файлу базы данных (создаётся автоматически)
 DB_PATH = "app.db"
 
 
 class ModelService:
-    """
-    Класс, который управляет моделью.
-    Создаётся один раз при запуске сервера и живёт в памяти.
-    """
 
     def __init__(self):
-        # Поля, которые заполнятся при загрузке модели
-        self.pipeline = None          # sklearn Pipeline (scaler + модель)
-        self.is_loaded = False        # Загружена ли модель
-        self.label_encoders = {}      # Кодировщики категорий (текст → число)
-        self.categorical_cols = []    # Список категориальных колонок
-        self.feature_cols = []        # Список всех признаков в правильном порядке
-        self.current_model_id = None  # ID модели в базе данных
-
-        # Создаём таблицы в базе, если их ещё нет
+        self.pipeline = None
+        self.is_loaded = False
+        self.label_encoders = {}
+        self.categorical_cols = []
+        self.feature_cols = []
+        self.current_model_id = None
         self._create_tables()
 
-    # ------------------------------------------------------------
-    # База данных
-    # ------------------------------------------------------------
-
     def _connect_db(self):
-        """Подключение к SQLite. Файл app.db создастся сам, если его нет."""
         conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row  # Чтобы можно было обращаться к колонкам по имени
+        conn.row_factory = sqlite3.Row
         return conn
 
     def _create_tables(self):
-        """Создаём две таблицы: models (история моделей) и predictions (история запросов)."""
         conn = self._connect_db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS models (
@@ -81,38 +58,25 @@ class ModelService:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
-    # Загрузка модели
-    # ------------------------------------------------------------
-
     def load_model(self, model_bytes: bytes, filename: str = "model.pkl"):
-        """
-        Загружает модель из байтов.
-        
-        Что должно быть внутри .pkl файла:
-        - pipeline: обученный sklearn Pipeline
-        - label_encoders: словарь с LabelEncoder для каждой категориальной колонки
-        - categorical_cols: список названий категориальных колонок
-        - feature_cols: список всех 13 признаков в правильном порядке
-        """
-        # joblib.load умеет читать из байтов, если обернуть их в BytesIO
         data = joblib.load(BytesIO(model_bytes))
 
-        # Достаём pipeline
         if isinstance(data, dict) and "pipeline" in data:
             self.pipeline = data["pipeline"]
-            self.label_encoders = data.get("label_encoders", {})
+            self.label_encoders = data.get("label_encoders", data.get("encoders", {}))
             self.categorical_cols = data.get("categorical_cols", [])
             self.feature_cols = data.get("feature_cols", [])
         elif isinstance(data, Pipeline):
-            # Если сохранили просто pipeline (без доп. информации)
             self.pipeline = data
         else:
             raise ValueError("Неизвестный формат модели")
 
+        # Если feature_cols не указаны — берём из самого пайплайна
+        if not self.feature_cols and hasattr(self.pipeline, 'feature_names_in_'):
+            self.feature_cols = list(self.pipeline.feature_names_in_)
+
         self.is_loaded = True
 
-        # Сохраняем запись в таблицу models
         conn = self._connect_db()
         cursor = conn.execute(
             "INSERT INTO models (filename, algorithm, roc_auc, features) VALUES (?, ?, ?, ?)",
@@ -128,68 +92,42 @@ class ModelService:
         conn.close()
 
         logger.info(f"Модель '{filename}' загружена (id={self.current_model_id})")
-
-    # ------------------------------------------------------------
-    # Предобработка данных
-    # ------------------------------------------------------------
+        logger.info(f"Признаки: {self.feature_cols}")
 
     def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Готовит данные к подаче в модель:
-        1. Кодирует текстовые категории в числа
-        2. Выстраивает колонки в том порядке, который ожидает модель
-        """
         df = df.copy()
 
-        # Кодируем категориальные колонки
         for col in self.categorical_cols:
             if col in df.columns and col in self.label_encoders:
                 encoder = self.label_encoders[col]
-                # Если встретилось значение, которого не было при обучении — заменяем на первое известное
                 df[col] = df[col].apply(lambda x: x if x in encoder.classes_ else encoder.classes_[0])
                 df[col] = encoder.transform(df[col])
 
-        # Оставляем только нужные колонки в правильном порядке
         if self.feature_cols:
             return df[self.feature_cols]
         return df
 
-    # ------------------------------------------------------------
-    # Предсказание
-    # ------------------------------------------------------------
-
     def predict(self, records: list[dict]) -> list[dict]:
-        """
-        Предсказание для списка записей.
-        
-        Принимает: список словарей с признаками клиента
-        Возвращает: тот же список, но с добавленными полями:
-        - loan_status: 0 или 1
-        - loan_status_label: "одобрено" или "отказ"
-        - probability: вероятность
-        """
         if not self.is_loaded:
             raise ValueError("Модель не загружена")
 
-        # Словари → DataFrame
         df = pd.DataFrame(records)
+        logger.info(f"DataFrame колонки: {list(df.columns)}")
+        logger.info(f"DataFrame dtypes: {df.dtypes.to_dict()}")
 
-        # Предобработка (если есть энкодеры — закодируем)
         if self.label_encoders:
             df = self._preprocess(df)
         elif self.feature_cols:
+            # Выстраиваем колонки в правильном порядке
             df = df[self.feature_cols]
 
-        # Вызываем модель
         predictions = self.pipeline.predict(df)
 
-        # Пытаемся получить вероятности (не все модели это умеют)
         try:
             probabilities = self.pipeline.predict_proba(df)[:, 1]
         except Exception:
             probabilities = [None] * len(predictions)
 
-        # Формируем результат
         results = []
         conn = self._connect_db()
 
@@ -201,7 +139,6 @@ class ModelService:
                 result["probability"] = round(float(probabilities[i]), 4)
             results.append(result)
 
-            # Сохраняем в базу
             conn.execute(
                 "INSERT INTO predictions (model_id, input_data, prediction, probability, label, source) VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -219,22 +156,12 @@ class ModelService:
         return results
 
     def predict_from_csv(self, csv_bytes: bytes, filename: str = "data.csv"):
-        """
-        Предсказание из CSV-файла.
-        
-        Возвращает:
-        - DataFrame с исходными данными + колонки predicted_loan_status и probability
-        - roc_auc (если в CSV была колонка loan_status)
-        - количество обработанных строк
-        """
         if not self.is_loaded:
             raise ValueError("Модель не загружена")
 
-        # Читаем CSV
         df = pd.read_csv(BytesIO(csv_bytes))
         original_df = df.copy()
 
-        # Проверяем, есть ли колонка с правильным ответом
         has_target = "loan_status" in df.columns
         if has_target:
             y_true = df["loan_status"].copy()
@@ -242,7 +169,6 @@ class ModelService:
         else:
             y_true = None
 
-        # Предобработка и предсказание
         df_processed = self._preprocess(df)
         predictions = self.pipeline.predict(df_processed)
 
@@ -251,12 +177,10 @@ class ModelService:
         except Exception:
             probabilities = None
 
-        # Добавляем результаты к исходным данным
         original_df["predicted_loan_status"] = predictions
         if probabilities is not None:
             original_df["probability"] = probabilities.round(4)
 
-        # Сохраняем все предсказания в базу
         conn = self._connect_db()
         for i in range(len(original_df)):
             conn.execute(
@@ -273,7 +197,6 @@ class ModelService:
         conn.commit()
         conn.close()
 
-        # Считаем ROC-AUC, если есть правильные ответы
         roc_auc = None
         if has_target and y_true is not None:
             try:
@@ -283,22 +206,14 @@ class ModelService:
 
         return original_df, roc_auc, len(original_df)
 
-    # ------------------------------------------------------------
-    # Статистика
-    # ------------------------------------------------------------
-
     def get_stats(self) -> dict:
-        """Собирает статистику из базы данных."""
         conn = self._connect_db()
 
         models_count = conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
         preds_count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
-
-        # Сколько одобрено и сколько отказов
         approved = conn.execute("SELECT COUNT(*) FROM predictions WHERE prediction = 1").fetchone()[0]
         rejected = conn.execute("SELECT COUNT(*) FROM predictions WHERE prediction = 0").fetchone()[0]
 
-        # Последние 10 запросов
         recent = conn.execute(
             "SELECT * FROM predictions ORDER BY created_at DESC LIMIT 10"
         ).fetchall()
@@ -315,5 +230,14 @@ class ModelService:
         }
 
 
-# Создаём один экземпляр сервиса при запуске
 model_service = ModelService()
+
+MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ml", "model.pkl")
+
+if os.path.exists(MODEL_PATH):
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            model_service.load_model(f.read(), filename="model.pkl")
+        logger.info(f"Модель автоматически загружена из {MODEL_PATH}")
+    except Exception as e:
+        logger.warning(f"Не удалось загрузить модель при старте: {e}")

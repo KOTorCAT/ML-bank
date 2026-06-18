@@ -2,28 +2,176 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Проверка ипотеки</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сервис одобрения ипотеки</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <h1>Проверка одобрения ипотеки</h1>
+    <div class="app-container">
+        <!-- Шапка -->
+        <header class="app-header">
+            <h1>Сервис одобрения ипотеки</h1>
+            <div class="header-status">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Проверка подключения...</span>
+            </div>
+        </header>
 
-    <!-- ФРОНТЕНДЕР: здесь твоя форма -->
-    <p>Здесь будет форма ввода данных клиента.</p>
+        <main class="app-main">
+            <!-- Секция 0: Ручной ввод данных -->
+            <section class="card" id="inputSection">
+                <h2>Введите данные клиента</h2>
+                <p class="card-description">Заполните все поля формы и добавьте запись.</p>
 
-    <!-- ФРОНТЕНДЕР: здесь вывод результата -->
-    <p>Здесь будет результат: одобрено/отказ и вероятность.</p>
+                <div class="form-grid">
+                    <!-- Левая колонка -->
+                    <div class="form-column">
+                        <div class="form-group">
+                            <label>Возраст (person_age)</label>
+                            <input type="number" id="person_age" value="25" min="18" max="100">
+                        </div>
+                        <div class="form-group">
+                            <label>Пол (person_gender)</label>
+                            <select id="person_gender">
+                                <option value="0">Женский (0)</option>
+                                <option value="1" selected>Мужской (1)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Образование (person_education)</label>
+                            <select id="person_education">
+                                <option value="0">Общее образование (0)</option>
+                                <option value="1" selected>Среднее профессиональное (1)</option>
+                                <option value="2">Высшее образование (2)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Доход (person_income)</label>
+                            <input type="number" id="person_income" value="50000" min="10000" step="1000">
+                        </div>
+                        <div class="form-group">
+                            <label>Стаж работы (person_emp_exp)</label>
+                            <input type="number" id="person_emp_exp" value="5" min="0" max="50">
+                        </div>
+                        <div class="form-group">
+                            <label>Тип жилья (person_home_ownership)</label>
+                            <select id="person_home_ownership">
+                                <option value="0">Арендованное (0)</option>
+                                <option value="1" selected>Собственное (1)</option>
+                                <option value="2">Ипотечное (2)</option>
+                            </select>
+                        </div>
+                    </div>
 
-    <!-- 
-        Как отправлять запрос к API:
-        
-        fetch('/model/predict', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ records: [{...}] })
-        })
-        
-        Документация: /docs
-        Проверка модели: /health
-    -->
+                    <!-- Правая колонка -->
+                    <div class="form-column">
+                        <div class="form-group">
+                            <label>Сумма кредита (loan_amnt)</label>
+                            <input type="number" id="loan_amnt" value="150000" min="10000" step="1000">
+                        </div>
+                        <div class="form-group">
+                            <label>Цель кредита (loan_intent)</label>
+                            <select id="loan_intent">
+                                <option value="0" selected>Целевое (0)</option>
+                                <option value="1">Нецелевое потребительское (1)</option>
+                                <option value="2">Кредит для бизнеса (2)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Процентная ставка (loan_int_rate)</label>
+                            <input type="number" id="loan_int_rate" value="6.5" min="1" max="30" step="0.1">
+                        </div>
+                        <div class="form-group">
+                            <label>Отношение кредита к доходу (loan_percent_income)</label>
+                            <input type="number" id="loan_percent_income" value="0.3" min="0.01" max="1" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>Кредитная история (cb_person_cred_hist_length)</label>
+                            <input type="number" id="cb_person_cred_hist_length" value="5" min="0" max="30" step="0.5">
+                        </div>
+                        <div class="form-group">
+                            <label>Кредитный скоринг (credit_score)</label>
+                            <input type="number" id="credit_score" value="720" min="300" max="850">
+                        </div>
+                        <div class="form-group">
+                            <label>Дефолты в прошлом (previous_loan_defaults_on_file)</label>
+                            <select id="previous_loan_defaults_on_file">
+                                <option value="0">Нет (0)</option>
+                                <option value="1" selected>Да (1)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Кнопки действий -->
+                <div class="form-actions">
+                    <button class="btn btn-success" id="addRecordBtn">Добавить запись</button>
+                    <button class="btn btn-primary" id="clearRecordsBtn">Очистить все</button>
+                </div>
+
+                <!-- Таблица с добавленными записями -->
+                <div id="recordsTableWrapper" style="margin-top: 20px;">
+                    <h3 style="font-size: 0.95rem; margin-bottom: 10px;">Добавленные записи (<span id="recordsCount">0</span>)</h3>
+                    <div id="recordsTableContainer"></div>
+                </div>
+
+                <!-- Скрытые JSON и CSV превью (видны только разработчику) -->
+                <div class="preview-grid" id="previewContainer" style="display: none;">
+                    <div class="preview-box">
+                        <h3>JSON</h3>
+                        <div id="jsonPreview"></div>
+                    </div>
+                    <div class="preview-box">
+                        <h3>CSV</h3>
+                        <div id="csvPreview"></div>
+                    </div>
+                </div>
+
+                <!-- Кнопка отправки -->
+                <div style="margin-top: 16px;">
+                    <button class="btn btn-success" id="sendRecordsBtn" style="width: 100%; padding: 14px; font-size: 1.1rem;">
+                        Отправить все записи на предсказание
+                    </button>
+                </div>
+                <div id="manualJsonResult" class="result-area"></div>
+            </section>
+
+            <!-- Секция 1: Загрузка модели -->
+            <section class="card" id="modelSection">
+                <h2>1. Загрузка модели</h2>
+                <p class="card-description">Загрузите обученную модель (.pkl) для начала работы.</p>
+                <div class="file-upload-wrapper">
+                    <input type="file" id="modelFileInput" accept=".pkl">
+                    <button class="btn btn-primary" id="uploadModelBtn">Загрузить</button>
+                </div>
+                <div id="modelUploadResult" class="result-area"></div>
+            </section>
+
+            <!-- Секция 2: CSV предсказание -->
+            <section class="card" id="csvSection">
+                <h2>2. Предсказание из CSV-файла</h2>
+                <p class="card-description">Загрузите готовый CSV-файл с данными клиентов.</p>
+                <div class="file-upload-wrapper">
+                    <input type="file" id="csvFileInput" accept=".csv">
+                    <button class="btn btn-success" id="predictCsvBtn">Обработать CSV</button>
+                </div>
+                <div id="csvResult" class="result-area">
+                    <div id="csvTableWrapper"></div>
+                </div>
+            </section>
+
+            <!-- Секция 3: Статистика -->
+            <section class="card" id="statsSection">
+                <h2>3. Статистика</h2>
+                <p class="card-description">Общая информация о работе сервиса.</p>
+                <button class="btn btn-secondary" id="getStatsBtn">Обновить</button>
+                <div id="statsResult" class="result-area"></div>
+            </section>
+        </main>
+    </div>
+    <script src="script.js"></script>
 </body>
 </html>
