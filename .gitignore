@@ -8,8 +8,6 @@ build/
 app.db
 app.log
 *.log
-ml/model.pkl
-ml/test_data.csv
 .vscode/
 .idea/
 *.swp
