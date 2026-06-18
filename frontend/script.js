@@ -29,11 +29,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const sendRecordsBtn = document.getElementById('sendRecordsBtn');
     const manualJsonResult = document.getElementById('manualJsonResult');
 
-    // Загрузка модели
-    const modelFileInput = document.getElementById('modelFileInput');
-    const uploadModelBtn = document.getElementById('uploadModelBtn');
-    const modelUploadResult = document.getElementById('modelUploadResult');
-
     // CSV предсказание
     const csvFileInput = document.getElementById('csvFileInput');
     const predictCsvBtn = document.getElementById('predictCsvBtn');
@@ -42,6 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Статистика
     const getStatsBtn = document.getElementById('getStatsBtn');
     const statsResult = document.getElementById('statsResult');
+
+    // --- Проверка существования элементов ---
+    console.log('csvFileInput:', csvFileInput);
+    console.log('predictCsvBtn:', predictCsvBtn);
+    console.log('csvResult:', csvResult);
 
     // --- Состояние ---
     let records = [];
@@ -151,8 +151,8 @@ document.addEventListener('DOMContentLoaded', () => {
             recordsTableContainer.innerHTML = '<p style="padding: 16px; text-align: center; color: #94a3b8;">Нет добавленных записей</p>';
             recordsCount.textContent = '0';
             // Очищаем JSON и CSV превью
-            jsonPreview.textContent = '';
-            csvPreview.textContent = '';
+            if (jsonPreview) jsonPreview.textContent = '';
+            if (csvPreview) csvPreview.textContent = '';
             return;
         }
 
@@ -190,27 +190,33 @@ document.addEventListener('DOMContentLoaded', () => {
         recordsTableContainer.innerHTML = html;
 
         // Обновляем JSON и CSV превью (скрытые)
-        const jsonData = { records: records };
-        jsonPreview.textContent = JSON.stringify(jsonData, null, 2);
+        if (jsonPreview) {
+            const jsonData = { records: records };
+            jsonPreview.textContent = JSON.stringify(jsonData, null, 2);
+        }
 
-        if (records.length > 0) {
-            const headers = Object.keys(records[0]);
-            let csv = headers.join(',') + '\n';
-            records.forEach(record => {
-                csv += headers.map(h => record[h]).join(',') + '\n';
-            });
-            csvPreview.textContent = csv;
-        } else {
-            csvPreview.textContent = 'Нет данных';
+        if (csvPreview) {
+            if (records.length > 0) {
+                const headers = Object.keys(records[0]);
+                let csv = headers.join(',') + '\n';
+                records.forEach(record => {
+                    csv += headers.map(h => record[h]).join(',') + '\n';
+                });
+                csvPreview.textContent = csv;
+            } else {
+                csvPreview.textContent = 'Нет данных';
+            }
         }
     }
 
     // Показать/скрыть JSON и CSV превью (для разработчика)
     function togglePreview() {
-        if (previewContainer.style.display === 'none') {
-            previewContainer.style.display = 'grid';
-        } else {
-            previewContainer.style.display = 'none';
+        if (previewContainer) {
+            if (previewContainer.style.display === 'none') {
+                previewContainer.style.display = 'grid';
+            } else {
+                previewContainer.style.display = 'none';
+            }
         }
     }
 
@@ -274,6 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- UI функции ---
     function setStatus(state, message) {
+        if (!statusDot || !statusText) return;
         statusDot.className = 'status-dot';
         if (state === 'loading') statusDot.classList.add('loading');
         else if (state === 'success') statusDot.classList.add('success');
@@ -282,6 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showResult(element, data, isError = false) {
+        if (!element) return;
         element.innerHTML = '';
         const pre = document.createElement('pre');
         if (isError) {
@@ -299,6 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showLoading(element, message) {
+        if (!element) return;
         element.innerHTML = '<pre class="success">' + message + '</pre>';
     }
 
@@ -320,40 +329,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- Загрузка модели ---
-    async function uploadModel() {
-        const file = modelFileInput.files[0];
-        if (!file) {
-            showResult(modelUploadResult, 'Выберите файл .pkl', true);
-            return;
-        }
-        if (!file.name.endsWith('.pkl')) {
-            showResult(modelUploadResult, 'Неверный формат. Ожидается .pkl', true);
-            return;
-        }
-
-        uploadModelBtn.disabled = true;
-        showLoading(modelUploadResult, 'Загрузка модели...');
-
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-            const response = await fetch('/model/upload-model', { method: 'POST', body: formData });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.detail || 'Ошибка ' + response.status);
-            showResult(modelUploadResult, data);
-            await checkHealth();
-        } catch (error) {
-            showResult(modelUploadResult, error.message, true);
-        } finally {
-            uploadModelBtn.disabled = false;
-            modelFileInput.value = '';
-        }
-    }
-
     // --- CSV предсказание ---
     async function predictCsv() {
+        console.log('predictCsv function called');
+        
+        if (!csvFileInput || !csvResult) {
+            console.error('CSV elements not found');
+            return;
+        }
+        
         const file = csvFileInput.files[0];
         if (!file) {
             showResult(csvResult, 'Выберите CSV-файл', true);
@@ -364,7 +348,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        predictCsvBtn.disabled = true;
+        if (predictCsvBtn) predictCsvBtn.disabled = true;
         csvResult.innerHTML = '<pre class="success">Обработка CSV...</pre>';
 
         const formData = new FormData();
@@ -425,21 +409,24 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             csvResult.innerHTML = '<pre class="error">Ошибка: ' + error.message + '</pre>';
         } finally {
-            predictCsvBtn.disabled = false;
-            csvFileInput.value = '';
+            if (predictCsvBtn) predictCsvBtn.disabled = false;
+            if (csvFileInput) csvFileInput.value = '';
         }
     }
 
     // --- Статистика ---
     async function getStats() {
+        if (!getStatsBtn) return;
         getStatsBtn.disabled = true;
-        showLoading(statsResult, 'Загрузка статистики...');
+        if (statsResult) showLoading(statsResult, 'Загрузка статистики...');
 
         try {
             const response = await fetch('/model/stats');
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || 'Ошибка ' + response.status);
 
+            if (!statsResult) return;
+            
             const stats = data.data;
 
             // Статистика в карточках
@@ -524,9 +511,9 @@ document.addEventListener('DOMContentLoaded', () => {
             statsResult.innerHTML = html;
 
         } catch (error) {
-            statsResult.innerHTML = '<pre class="error">Ошибка: ' + error.message + '</pre>';
+            if (statsResult) statsResult.innerHTML = '<pre class="error">Ошибка: ' + error.message + '</pre>';
         } finally {
-            getStatsBtn.disabled = false;
+            if (getStatsBtn) getStatsBtn.disabled = false;
         }
     }
 
@@ -536,13 +523,18 @@ document.addEventListener('DOMContentLoaded', () => {
     window.togglePreview = togglePreview;
 
     // --- Навешиваем события ---
-    addRecordBtn.addEventListener('click', addRecord);
-    clearRecordsBtn.addEventListener('click', clearRecords);
-    sendRecordsBtn.addEventListener('click', sendRecords);
+    if (addRecordBtn) addRecordBtn.addEventListener('click', addRecord);
+    if (clearRecordsBtn) clearRecordsBtn.addEventListener('click', clearRecords);
+    if (sendRecordsBtn) sendRecordsBtn.addEventListener('click', sendRecords);
 
-    uploadModelBtn.addEventListener('click', uploadModel);
-    predictCsvBtn.addEventListener('click', predictCsv);
-    getStatsBtn.addEventListener('click', getStats);
+    if (predictCsvBtn) {
+        console.log('Adding click event to predictCsvBtn');
+        predictCsvBtn.addEventListener('click', predictCsv);
+    } else {
+        console.error('predictCsvBtn not found');
+    }
+    
+    if (getStatsBtn) getStatsBtn.addEventListener('click', getStats);
 
     // Enter в полях формы для быстрого добавления
     document.querySelectorAll('.form-group input, .form-group select').forEach(el => {
@@ -560,5 +552,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(checkHealth, 15000);
 
     // Для отладки: показать JSON и CSV по двойному клику на заголовке
-    document.querySelector('#inputSection h2').addEventListener('dblclick', togglePreview);
+    const inputSectionTitle = document.querySelector('#inputSection h2');
+    if (inputSectionTitle) {
+        inputSectionTitle.addEventListener('dblclick', togglePreview);
+    }
 });

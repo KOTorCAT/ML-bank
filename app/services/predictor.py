@@ -71,7 +71,6 @@ class ModelService:
         else:
             raise ValueError("Неизвестный формат модели")
 
-        # Если feature_cols не указаны — берём из самого пайплайна
         if not self.feature_cols and hasattr(self.pipeline, 'feature_names_in_'):
             self.feature_cols = list(self.pipeline.feature_names_in_)
 
@@ -97,14 +96,32 @@ class ModelService:
     def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
-        for col in self.categorical_cols:
-            if col in df.columns and col in self.label_encoders:
-                encoder = self.label_encoders[col]
-                df[col] = df[col].apply(lambda x: x if x in encoder.classes_ else encoder.classes_[0])
-                df[col] = encoder.transform(df[col])
+        # Преобразуем строковые категории в числа
+        if self.label_encoders:
+            for col in self.categorical_cols:
+                if col in df.columns and col in self.label_encoders:
+                    encoder = self.label_encoders[col]
+                    try:
+                        df[col] = df[col].apply(
+                            lambda x: encoder.transform([str(x)])[0] 
+                            if pd.notna(x) and str(x) in encoder.classes_ 
+                            else 0
+                        )
+                    except Exception:
+                        df[col] = 0
+        else:
+            # Без энкодеров — пытаемся преобразовать строки в числа
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    try:
+                        df[col] = pd.to_numeric(df[col])
+                    except (ValueError, TypeError):
+                        df[col] = pd.factorize(df[col])[0]
 
         if self.feature_cols:
-            return df[self.feature_cols]
+            # Оставляем только нужные колонки в правильном порядке
+            available_cols = [c for c in self.feature_cols if c in df.columns]
+            return df[available_cols]
         return df
 
     def predict(self, records: list[dict]) -> list[dict]:
@@ -113,13 +130,10 @@ class ModelService:
 
         df = pd.DataFrame(records)
         logger.info(f"DataFrame колонки: {list(df.columns)}")
-        logger.info(f"DataFrame dtypes: {df.dtypes.to_dict()}")
+        logger.info(f"Первая строка: {df.iloc[0].to_dict()}")
 
-        if self.label_encoders:
-            df = self._preprocess(df)
-        elif self.feature_cols:
-            # Выстраиваем колонки в правильном порядке
-            df = df[self.feature_cols]
+        df = self._preprocess(df)
+        logger.info(f"После препроцессинга колонки: {list(df.columns)}")
 
         predictions = self.pipeline.predict(df)
 
