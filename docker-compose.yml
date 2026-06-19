@@ -1,0 +1,8 @@
+services:
+  ml-bank:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ml/model.pkl:/app/ml/model.pkl
+    restart: unless-stopped
