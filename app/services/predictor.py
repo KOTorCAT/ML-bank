@@ -1,216 +1,335 @@
-import joblib
-import pandas as pd
-import numpy as np
-import sqlite3
-import json
-import os
-import logging
-from io import BytesIO
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score
+"""
+Сервисный слой. Хранит модель в памяти и делает предсказания.
 
+Это главный файл приложения. Внутри находится класс ModelService.
+Когда сервер запускается, создаётся один экземпляр этого класса.
+Он загружает модель в оперативную память и держит её там постоянно.
+Все запросы на предсказание проходят через этот класс.
+
+Никакой базы данных здесь нет. Только модель и предсказания.
+"""
+
+import joblib          # умеет загружать обученные модели из файлов .pkl
+import pandas as pd    # работа с таблицами: строки, колонки, фильтры
+import os              # проверка, существует ли файл, сборка путей к файлам
+import logging         # запись событий в лог, чтобы видеть, что происходит на сервере
+from io import BytesIO            # позволяет читать байты так, как будто это файл
+from sklearn.pipeline import Pipeline          # тип "пайплайн" — конвейер из шагов модели
+from sklearn.metrics import roc_auc_score      # метрика качества: насколько хорошо модель предсказывает
+
+# logger — это объект, через который мы пишем сообщения в лог.
+# __name__ подставит имя текущего файла, чтобы было понятно, откуда сообщение.
 logger = logging.getLogger(__name__)
-
-DB_PATH = "app.db"
 
 
 class ModelService:
+    """
+    Класс, который управляет моделью машинного обучения.
+
+    У этого класса три главные задачи:
+    1. Загрузить модель из файла в память.
+    2. Подготовить данные пользователя к формату, который понимает модель.
+    3. Сделать предсказание и вернуть результат.
+
+    Создаётся один раз при запуске сервера. Все запросы пользователей
+    используют один и тот же экземпляр этого класса.
+    """
 
     def __init__(self):
+        """
+        Конструктор. Вызывается один раз, когда создаётся объект ModelService.
+
+        Здесь мы задаём начальные значения для всех переменных объекта.
+        Все они начинаются с self. — это значит, что они принадлежат объекту
+        и доступны в любом методе этого класса.
+        """
+        # pipeline — это и есть обученная модель. Пока None, потому что модель ещё не загружена.
         self.pipeline = None
+
+        # Флаг, который показывает, загружена ли модель.
+        # True — модель готова, можно делать предсказания.
+        # False — модель не загружена, предсказания делать нельзя.
         self.is_loaded = False
+
+        # Энкодеры — это специальные объекты, которые превращают текст в числа.
+        # Например, колонка "образование" содержит значения "высшее", "среднее", "общее".
+        # Энкодер превращает их в 2, 1, 0. Модель работает только с числами.
+        # Это словарь: ключ — название колонки, значение — объект энкодера.
         self.label_encoders = {}
+
+        # Список колонок, которые содержат текст и требуют кодирования.
+        # Например: ["person_gender", "person_education", "loan_intent"]
         self.categorical_cols = []
+
+        # Полный список признаков в том порядке, в котором модель ожидает их увидеть.
+        # Порядок очень важен. Если модель обучалась на колонках в порядке A, B, C,
+        # то и при предсказании нужно подать их в том же порядке A, B, C.
         self.feature_cols = []
-        self.current_model_id = None
-        self._create_tables()
 
-    def _connect_db(self):
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
+    # --------------------------------------------------
+    # Загрузка модели
+    # --------------------------------------------------
 
-    def _create_tables(self):
-        conn = self._connect_db()
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT,
-                algorithm TEXT,
-                roc_auc REAL,
-                features TEXT,
-                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS predictions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id INTEGER,
-                input_data TEXT,
-                prediction INTEGER,
-                probability REAL,
-                label TEXT,
-                source TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (model_id) REFERENCES models(id)
-            )
-        """)
-        conn.commit()
-        conn.close()
+    def load_model(self, model_bytes: bytes):
+        """
+        Загружает модель из байтов в оперативную память.
 
-    def load_model(self, model_bytes: bytes, filename: str = "model.pkl"):
+        Параметр model_bytes — это содержимое файла .pkl.
+        Когда пользователь загружает файл через веб-интерфейс,
+        роутер читает файл и передаёт его содержимое сюда.
+
+        Модель может быть сохранена в двух форматах:
+
+        Формат 1 — словарь (dict), внутри которого:
+        - "pipeline" — сама модель (обязательно)
+        - "label_encoders" — энкодеры для текстовых полей (необязательно)
+        - "categorical_cols" — названия текстовых колонок (необязательно)
+        - "feature_cols" — список и порядок всех признаков (необязательно)
+
+        Формат 2 — сразу объект Pipeline, без словаря.
+        """
+        # BytesIO(model_bytes) превращает байты в объект, похожий на файл.
+        # joblib.load умеет читать и из реального файла, и из такого объекта в памяти.
         data = joblib.load(BytesIO(model_bytes))
 
+        # Проверяем, что именно мы загрузили.
         if isinstance(data, dict) and "pipeline" in data:
+            # Это словарь с ключом "pipeline". Достаём всё по частям.
             self.pipeline = data["pipeline"]
-            self.label_encoders = data.get("label_encoders", data.get("encoders", {}))
+            # .get() — безопасный способ достать значение из словаря.
+            # Если ключа нет, возвращается пустой словарь или список.
+            self.label_encoders = data.get("label_encoders", {})
             self.categorical_cols = data.get("categorical_cols", [])
             self.feature_cols = data.get("feature_cols", [])
+
         elif isinstance(data, Pipeline):
+            # Это сразу пайплайн, без словаря. Просто сохраняем его.
             self.pipeline = data
+
         else:
+            # Не словарь и не пайплайн — мы не знаем, что с этим делать.
             raise ValueError("Неизвестный формат модели")
 
+        # Если список признаков не нашёлся в метаданных,
+        # пробуем вытащить его из самого пайплайна.
+        # feature_names_in_ — это атрибут, который scikit-learn добавляет
+        # к пайплайну после обучения, если ему подавали DataFrame с названиями колонок.
         if not self.feature_cols and hasattr(self.pipeline, 'feature_names_in_'):
             self.feature_cols = list(self.pipeline.feature_names_in_)
 
+        # Ставим флаг, что модель загружена и готова к работе.
         self.is_loaded = True
 
-        conn = self._connect_db()
-        cursor = conn.execute(
-            "INSERT INTO models (filename, algorithm, roc_auc, features) VALUES (?, ?, ?, ?)",
-            (
-                filename,
-                data.get("metadata", {}).get("algorithm", "неизвестно") if isinstance(data, dict) else "неизвестно",
-                data.get("metadata", {}).get("roc_auc") if isinstance(data, dict) else None,
-                json.dumps(self.feature_cols),
-            ),
-        )
-        self.current_model_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+        # Пишем в лог, что модель успешно загрузилась, и какие признаки она использует.
+        logger.info(f"Модель загружена. Признаки: {self.feature_cols}")
 
-        logger.info(f"Модель '{filename}' загружена (id={self.current_model_id})")
-        logger.info(f"Признаки: {self.feature_cols}")
+    # --------------------------------------------------
+    # Подготовка данных (препроцессинг)
+    # --------------------------------------------------
 
     def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Подготавливает сырые данные к подаче в модель.
+
+        На входе — таблица (DataFrame) с данными, которые ввёл пользователь.
+        На выходе — таблица, готовая для передачи в model.predict().
+
+        Что именно делает этот метод:
+        1. Копирует таблицу, чтобы не испортить оригинал.
+        2. Превращает все текстовые значения в числа.
+           Модель не понимает слов, она понимает только числа.
+           "высшее образование" -> 2, "среднее" -> 1, "общее" -> 0.
+        3. Оставляет только те колонки, которые нужны модели,
+           и расставляет их в том порядке, в котором модель их ожидает.
+
+        Название начинается с подчёркивания (_). Так в Python принято обозначать
+        методы, которые используются только внутри класса и не вызываются снаружи.
+        """
+        # .copy() создаёт независимую копию таблицы.
+        # Все изменения будем делать с копией, оригинал не пострадает.
         df = df.copy()
 
-        # Преобразуем строковые категории в числа
+        # --- Шаг 1: превращаем текст в числа ---
+
         if self.label_encoders:
+            # У нас есть энкодеры (они были внутри файла модели).
+            # Проходим по всем колонкам, которые помечены как текстовые.
             for col in self.categorical_cols:
+                # Проверяем, что такая колонка есть в данных и для неё есть энкодер.
                 if col in df.columns and col in self.label_encoders:
                     encoder = self.label_encoders[col]
                     try:
+                        # .apply() применяет функцию к каждому значению в колонке.
+                        # lambda — это короткая функция в одну строку.
+                        # Логика такая: для каждого значения в колонке:
+                        # - если значение не пустое (pd.notna) и оно есть в списке известных категорий
+                        #   (encoder.classes_) — кодируем его через encoder.transform()
+                        # - если значение пустое или незнакомое — ставим 0
                         df[col] = df[col].apply(
-                            lambda x: encoder.transform([str(x)])[0] 
-                            if pd.notna(x) and str(x) in encoder.classes_ 
+                            lambda x: encoder.transform([str(x)])[0]
+                            if pd.notna(x) and str(x) in encoder.classes_
                             else 0
                         )
                     except Exception:
+                        # Если при кодировании что-то пошло не так,
+                        # заполняем всю колонку нулями. Это страховка.
                         df[col] = 0
         else:
-            # Без энкодеров — пытаемся преобразовать строки в числа
+            # Энкодеров нет. Пытаемся преобразовать текст в числа вручную.
+            # Проходим по всем колонкам таблицы.
             for col in df.columns:
+                # object — это тип данных pandas для строк и смешанных значений.
                 if df[col].dtype == 'object':
                     try:
+                        # pd.to_numeric пытается превратить строки в числа.
+                        # Это сработает, если в колонке лежат числа, записанные текстом.
                         df[col] = pd.to_numeric(df[col])
                     except (ValueError, TypeError):
+                        # Не получилось — значит, там действительно текст.
+                        # pd.factorize присваивает каждой уникальной строке свой номер.
+                        # Первое встреченное значение получит 0, второе — 1, и так далее.
                         df[col] = pd.factorize(df[col])[0]
 
+        # --- Шаг 2: оставляем только нужные колонки в правильном порядке ---
+
         if self.feature_cols:
-            # Оставляем только нужные колонки в правильном порядке
+            # Из списка всех признаков берём только те, которые реально есть в данных.
+            # Остальные отбрасываем.
             available_cols = [c for c in self.feature_cols if c in df.columns]
+            # Возвращаем таблицу только с отобранными колонками.
+            # Колонки будут именно в том порядке, в котором они записаны в self.feature_cols.
             return df[available_cols]
+
+        # Если список признаков пуст — возвращаем таблицу как есть.
         return df
 
+    # --------------------------------------------------
+    # Предсказание по JSON (один или несколько клиентов)
+    # --------------------------------------------------
+
     def predict(self, records: list[dict]) -> list[dict]:
+        """
+        Делает предсказание по списку словарей.
+
+        Параметр records — это список, где каждый элемент словарь с данными клиента.
+        Пример одного элемента:
+        {
+            "person_age": 25,
+            "person_gender": 1,
+            "person_income": 50000,
+            ...
+        }
+
+        Возвращает такой же список, но к каждому словарю добавлены три поля:
+        - loan_status: 0 (отказ) или 1 (одобрение)
+        - loan_status_label: "одобрено" или "отказ" — то же самое, но словами
+        - probability: вероятность одобрения, число от 0 до 1 (если модель умеет считать вероятность)
+        """
+        # Проверка: если модель не загружена, предсказывать нечем.
         if not self.is_loaded:
             raise ValueError("Модель не загружена")
 
+        # Превращаем список словарей в DataFrame (таблицу).
+        # DataFrame — это как таблица в Excel: строки и колонки.
         df = pd.DataFrame(records)
-        logger.info(f"DataFrame колонки: {list(df.columns)}")
-        logger.info(f"Первая строка: {df.iloc[0].to_dict()}")
 
+        # Прогоняем данные через подготовку (препроцессинг).
+        # После этого шага в таблице останутся только числа и только нужные колонки.
         df = self._preprocess(df)
-        logger.info(f"После препроцессинга колонки: {list(df.columns)}")
 
+        # Вызываем метод predict() у пайплайна.
+        # Он возвращает массив чисел: 0 или 1 для каждого клиента.
         predictions = self.pipeline.predict(df)
 
+        # Пытаемся получить вероятности.
+        # predict_proba() возвращает для каждого клиента две вероятности:
+        # вероятность класса 0 (отказ) и вероятность класса 1 (одобрение).
+        # [:, 1] — берём только второй столбец (вероятность одобрения) для всех строк.
+        # Не все модели умеют считать вероятности, поэтому оборачиваем в try.
         try:
             probabilities = self.pipeline.predict_proba(df)[:, 1]
         except Exception:
+            # Не получилось — для всех ставим None (пусто).
             probabilities = [None] * len(predictions)
 
+        # Собираем результат.
         results = []
-        conn = self._connect_db()
-
         for i, record in enumerate(records):
+            # Копируем исходные данные клиента, чтобы не потерять их.
             result = record.copy()
+
+            # Добавляем числовой результат.
             result["loan_status"] = int(predictions[i])
+
+            # Добавляем текстовую метку.
             result["loan_status_label"] = "одобрено" if predictions[i] == 1 else "отказ"
+
+            # Добавляем вероятность, если она есть.
             if probabilities[i] is not None:
+                # round(..., 4) округляет до 4 знаков после запятой.
                 result["probability"] = round(float(probabilities[i]), 4)
+
             results.append(result)
 
-            conn.execute(
-                "INSERT INTO predictions (model_id, input_data, prediction, probability, label, source) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    self.current_model_id,
-                    json.dumps(record, ensure_ascii=False),
-                    int(predictions[i]),
-                    probabilities[i] if probabilities[i] is not None else None,
-                    result["loan_status_label"],
-                    "json",
-                ),
-            )
-
-        conn.commit()
-        conn.close()
         return results
 
-    def predict_from_csv(self, csv_bytes: bytes, filename: str = "data.csv"):
+    # --------------------------------------------------
+    # Предсказание по CSV-файлу
+    # --------------------------------------------------
+
+    def predict_from_csv(self, csv_bytes: bytes):
+        """
+        Делает предсказание по CSV-файлу.
+
+        Параметр csv_bytes — это содержимое CSV-файла в виде байтов.
+
+        Возвращает три вещи:
+        - original_df: таблица с исходными данными и двумя новыми колонками:
+          predicted_loan_status (0 или 1) и probability (вероятность)
+        - roc_auc: число — показатель качества модели, если в файле была колонка
+          loan_status с правильными ответами. Если колонки не было — None.
+        - rows_count: сколько строк обработано
+        """
         if not self.is_loaded:
             raise ValueError("Модель не загружена")
 
+        # Читаем CSV-файл в таблицу.
         df = pd.read_csv(BytesIO(csv_bytes))
+
+        # Сохраняем копию исходных данных. В конце мы добавим к ним предсказания.
         original_df = df.copy()
 
+        # Проверяем, есть ли в файле колонка loan_status.
+        # Если есть — это значит, что в файле уже лежат правильные ответы,
+        # и мы можем оценить, насколько хорошо модель справилась.
         has_target = "loan_status" in df.columns
-        if has_target:
-            y_true = df["loan_status"].copy()
-            df = df.drop(columns=["loan_status"])
-        else:
-            y_true = None
+        y_true = df["loan_status"].copy() if has_target else None
 
+        if has_target:
+            # Убираем колонку с ответами из данных для предсказания.
+            # Модель не должна видеть правильный ответ.
+            df = df.drop(columns=["loan_status"])
+
+        # Подготавливаем данные и получаем предсказания.
         df_processed = self._preprocess(df)
         predictions = self.pipeline.predict(df_processed)
 
+        # Пытаемся получить вероятности.
         try:
             probabilities = self.pipeline.predict_proba(df_processed)[:, 1]
         except Exception:
             probabilities = None
 
+        # Добавляем колонку с предсказаниями к исходным данным.
         original_df["predicted_loan_status"] = predictions
+
+        # Если вероятности есть — добавляем и их.
         if probabilities is not None:
             original_df["probability"] = probabilities.round(4)
 
-        conn = self._connect_db()
-        for i in range(len(original_df)):
-            conn.execute(
-                "INSERT INTO predictions (model_id, input_data, prediction, probability, label, source) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    self.current_model_id,
-                    json.dumps(df.iloc[i].to_dict(), ensure_ascii=False),
-                    int(predictions[i]),
-                    float(probabilities[i]) if probabilities is not None else None,
-                    "одобрено" if predictions[i] == 1 else "отказ",
-                    f"csv:{filename}",
-                ),
-            )
-        conn.commit()
-        conn.close()
-
+        # Если были правильные ответы, считаем ROC-AUC.
+        # ROC-AUC — это число от 0 до 1. 0.5 — модель гадает наугад,
+        # 1.0 — идеальное предсказание. Чем ближе к 1, тем лучше.
         roc_auc = None
         if has_target and y_true is not None:
             try:
@@ -220,38 +339,44 @@ class ModelService:
 
         return original_df, roc_auc, len(original_df)
 
-    def get_stats(self) -> dict:
-        conn = self._connect_db()
 
-        models_count = conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
-        preds_count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
-        approved = conn.execute("SELECT COUNT(*) FROM predictions WHERE prediction = 1").fetchone()[0]
-        rejected = conn.execute("SELECT COUNT(*) FROM predictions WHERE prediction = 0").fetchone()[0]
-
-        recent = conn.execute(
-            "SELECT * FROM predictions ORDER BY created_at DESC LIMIT 10"
-        ).fetchall()
-        recent_list = [dict(row) for row in recent]
-
-        conn.close()
-
-        return {
-            "models_uploaded": models_count,
-            "predictions_made": preds_count,
-            "approved": approved,
-            "rejected": rejected,
-            "recent_predictions": recent_list,
-        }
-
+# =========================================================================
+# Глобальный экземпляр сервиса
+# =========================================================================
+# Эта строчка создаёт объект ModelService один раз, когда Python читает этот файл.
+# Роутер (файл routers/model.py) импортирует этот объект и использует его.
+# Благодаря этому все запросы проходят через одну и ту же модель в памяти.
 
 model_service = ModelService()
 
-MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ml", "model.pkl")
+# =========================================================================
+# Автоматическая загрузка модели при старте сервера
+# =========================================================================
+# Когда сервер запускается, этот код проверяет: есть ли файл ml/model.pkl?
+# Если есть — модель загружается сразу, без участия пользователя.
+# Это удобно: не нужно каждый раз после перезапуска сервера
+# заходить в веб-интерфейс и загружать модель вручную.
 
+# Собираем путь к файлу модели.
+# __file__ — это путь к текущему файлу (predictor.py).
+# os.path.dirname() берёт путь к папке, отбрасывая имя файла.
+# Вызываем три раза: убираем predictor.py -> services -> app.
+# Получаем корень проекта. К нему добавляем "ml/model.pkl".
+MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "ml",
+    "model.pkl"
+)
+
+# Проверяем, существует ли файл.
 if os.path.exists(MODEL_PATH):
     try:
+        # Открываем файл в режиме "rb" (read binary — чтение байтов).
         with open(MODEL_PATH, "rb") as f:
-            model_service.load_model(f.read(), filename="model.pkl")
+            # Читаем содержимое и передаём в load_model.
+            model_service.load_model(f.read())
         logger.info(f"Модель автоматически загружена из {MODEL_PATH}")
     except Exception as e:
+        # Если что-то пошло не так — пишем предупреждение в лог,
+        # но сервер продолжает работать. Модель можно будет загрузить вручную.
         logger.warning(f"Не удалось загрузить модель при старте: {e}")
